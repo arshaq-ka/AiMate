@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QGuiApplication
+from PySide6.QtGui import QCloseEvent, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -99,6 +99,18 @@ class WritingAssistantWindow(QDialog):
                 background: white; border: 1px solid #d5daf0;
                 border-radius: 8px; padding: 8px; color: #20294e;
             }
+            QComboBox QAbstractItemView {
+                background-color: white;
+                color: #20294e;
+                border: 1px solid #d5daf0;
+                selection-background-color: #7069e8;
+                selection-color: white;
+                outline: 0;
+            }
+            QComboBox QAbstractItemView::item {
+                min-height: 28px;
+                padding: 5px 10px;
+            }
             QPushButton {
                 background: #7069e8; color: white; border: none;
                 border-radius: 8px; padding: 9px 14px; font-weight: 600;
@@ -135,8 +147,35 @@ class WritingAssistantWindow(QDialog):
         self._mode_by_index: list[WritingMode] = []
         for mode in WritingMode:
             self.mode_combo.addItem(mode.value)
+            self.mode_combo.setItemData(
+                self.mode_combo.count() - 1,
+                QColor("#20294e"),
+                Qt.ItemDataRole.ForegroundRole,
+            )
             self._mode_by_index.append(mode)
+        self.mode_combo.setMaxVisibleItems(8)
+        self.mode_combo.view().setStyleSheet(
+            """
+            QListView {
+                background-color: white;
+                color: #20294e;
+                border: 1px solid #d5daf0;
+                outline: 0;
+            }
+            QListView::item { min-height: 28px; padding: 5px 10px; }
+            QListView::item:selected {
+                background-color: #7069e8;
+                color: white;
+            }
+            """
+        )
+        self.mode_combo.currentIndexChanged.connect(self._update_mode_description)
         layout.addWidget(self.mode_combo)
+        self.mode_description_label = QLabel()
+        self.mode_description_label.setObjectName("status")
+        self.mode_description_label.setWordWrap(True)
+        layout.addWidget(self.mode_description_label)
+        self._update_mode_description()
 
         controls = QHBoxLayout()
         self.check_button = QPushButton("Check Ollama")
@@ -301,8 +340,36 @@ class WritingAssistantWindow(QDialog):
         self.status_label.setText("Thinking…")
         self.run_button.setEnabled(False)
         self.check_button.setEnabled(False)
+        self.mode_combo.setEnabled(False)
         self.processing_changed.emit(True)
         self._start_worker("rewrite", text, mode)
+
+    def _update_mode_description(self) -> None:
+        mode = self._mode_by_index[self.mode_combo.currentIndex()]
+        descriptions = {
+            WritingMode.CORRECT_GRAMMAR: (
+                "Fix grammar with minimal edits; preserve meaning, names, and tense."
+            ),
+            WritingMode.SPELLING: "Correct spelling only; leave grammar and style alone.",
+            WritingMode.PUNCTUATION: (
+                "Fix punctuation only; results that change words are rejected."
+            ),
+            WritingMode.EXPLAIN_GRAMMAR: (
+                "Explain issues in plain language without rewriting your text."
+            ),
+            WritingMode.IMPROVE_TONE: "Make the text sound more natural and balanced.",
+            WritingMode.PROFESSIONAL: "Use a clear, professional workplace tone.",
+            WritingMode.FRIENDLY: "Make the wording warm and conversational.",
+            WritingMode.FORMAL: "Use polished, formal language.",
+            WritingMode.CONCISE: "Remove unnecessary wording while keeping key details.",
+            WritingMode.SHORTEN: "Make the text shorter without changing its meaning.",
+            WritingMode.SIMPLIFY: "Use simpler words and shorter sentences.",
+            WritingMode.CLARITY: "Improve clarity and sentence flow.",
+            WritingMode.REWRITE: "Rewrite naturally while preserving your meaning.",
+            WritingMode.EMAIL: "Improve an email without inventing details.",
+            WritingMode.SUMMARIZE: "Create a concise summary of the key points.",
+        }
+        self.mode_description_label.setText(descriptions[mode])
 
     def _start_worker(
         self,
@@ -333,17 +400,31 @@ class WritingAssistantWindow(QDialog):
         self.status_label.setText(message)
 
     def _on_result_ready(self, result: dict[str, Any]) -> None:
+        mode = self._mode_by_index[self.mode_combo.currentIndex()]
         self._last_corrected_text = result["corrected_text"]
-        lines = [
-            "SUGGESTED TEXT",
-            result["corrected_text"],
-            "",
-            "EXPLANATION",
-            result["explanation"],
-            "",
-            "SUGGESTED TONE",
-            result["suggested_tone"],
-        ]
+        if mode is WritingMode.EXPLAIN_GRAMMAR:
+            lines = [
+                "YOUR TEXT",
+                result["original_text"],
+                "",
+                "GRAMMAR NOTES",
+                result["explanation"],
+            ]
+        else:
+            result_title = (
+                "SUMMARY"
+                if mode is WritingMode.SUMMARIZE
+                else "SUGGESTED TEXT"
+            )
+            lines = [
+                result_title,
+                result["corrected_text"],
+                "",
+                "EXPLANATION",
+                result["explanation"],
+            ]
+            if result["suggested_tone"] != "Unchanged":
+                lines.extend(["", "SUGGESTED TONE", result["suggested_tone"]])
         if result["alternatives"]:
             lines.extend(["", "ALTERNATIVES"])
             lines.extend(
@@ -351,10 +432,18 @@ class WritingAssistantWindow(QDialog):
                 for index, alternative in enumerate(result["alternatives"], start=1)
             )
         self.output_edit.setPlainText("\n".join(lines))
-        self.copy_button.setEnabled(bool(self._last_corrected_text))
+        has_changed_text = (
+            self._last_corrected_text.strip() != result["original_text"].strip()
+        )
+        self.copy_button.setText(
+            "Copy summary" if mode is WritingMode.SUMMARIZE else "Copy result"
+        )
+        self.copy_button.setEnabled(
+            bool(self._last_corrected_text and mode is not WritingMode.EXPLAIN_GRAMMAR)
+        )
         self.replace_button.setEnabled(
             bool(
-                self._last_corrected_text
+                has_changed_text
                 and self._target_window_handle
                 and self._replace_allowed
             )
@@ -371,6 +460,7 @@ class WritingAssistantWindow(QDialog):
         self._worker = None
         self.check_button.setEnabled(True)
         self.run_button.setEnabled(self._model_checked)
+        self.mode_combo.setEnabled(True)
         if self.status_label.text() == "Thinking…":
             self.status_label.setText("Request finished.")
         self.processing_changed.emit(False)

@@ -106,6 +106,7 @@ class SelectionWritingWindowTests(unittest.TestCase):
 
         self.window._on_result_ready(
             {
+                "original_text": "Selected sentence.",
                 "corrected_text": "Corrected sentence.",
                 "explanation": "Grammar fixed.",
                 "suggested_tone": "Neutral",
@@ -181,6 +182,25 @@ class SelectionWritingWindowTests(unittest.TestCase):
         self.assertIn("Corrected selection.", self.window.output_edit.toPlainText())
         self.assertEqual(self.window.input_edit.toPlainText(), "Selected sentence.")
         self.assertTrue(self.window.replace_button.isEnabled())
+
+    def test_explain_grammar_shows_notes_and_does_not_offer_replacement(self) -> None:
+        self.window.mode_combo.setCurrentText("Explain grammar mistakes")
+        self.window.show_selection("I name was Arszz", 1234, QPoint(20, 20))
+        self.window._on_result_ready(
+            {
+                "original_text": "I name was Arszz",
+                "corrected_text": "I name was Arszz",
+                "explanation": "Use 'My' before 'name' to show possession.",
+                "suggested_tone": "Unchanged",
+                "alternatives": [],
+            }
+        )
+
+        output = self.window.output_edit.toPlainText()
+        self.assertIn("GRAMMAR NOTES", output)
+        self.assertIn("Use 'My'", output)
+        self.assertFalse(self.window.copy_button.isEnabled())
+        self.assertFalse(self.window.replace_button.isEnabled())
 
 
 if __name__ == "__main__":

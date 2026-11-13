@@ -60,11 +60,24 @@ Open **Writing assistant** from the character's right-click menu or the tray
 menu. The window checks the local Ollama service and model asynchronously.
 Enter or paste text, choose an operation, and select **Get suggestion**.
 
-Supported operations: correct grammar, improve tone, professional, friendly,
-formal, concise, shorten, rewrite, and email improvement. The result includes
-the suggested text, explanation, suggested tone, and up to two alternatives.
-Use **Copy corrected text** to explicitly copy the main suggestion; the app
-does not modify the source text.
+The action selector includes:
+
+- Proofreading: **Correct grammar**, **Fix spelling**, **Fix punctuation**.
+- Learning: **Explain grammar mistakes** (notes only; it does not rewrite text).
+- Rewriting: **Improve tone**, **Make professional**, **Make friendly**,
+  **Make formal**, **Make concise**, **Shorten sentence**, **Simplify wording**,
+  **Improve clarity**, **Rewrite**, and **Improve email**.
+- **Summarize**: create a concise summary.
+
+The short description under the selector explains the selected action. Results
+show an explanation and, for rewrites, suggested tone and alternatives. Use
+**Copy result** to explicitly copy the result; the app does not modify source
+text automatically.
+
+Grammar correction aims for minimal proofreading edits, preserves names and
+tense, and omits tone rewrites and alternative sentences. The local 3B model
+can still make mistakes, so review every suggestion before copying or replacing
+text.
 
 AI inference runs in a worker thread so the character and UI remain responsive.
 The character displays **THINKING** while a suggestion is being generated.

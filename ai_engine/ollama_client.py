@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,6 +13,19 @@ from ai_engine.prompts import RESPONSE_SCHEMA, WritingMode, build_system_prompt
 DEFAULT_HOST = "http://127.0.0.1:11434"
 DEFAULT_MODEL_CANDIDATES = ("llama3.2:3b", "llama3.2:latest", "llama3.2")
 MAX_INPUT_LENGTH = 12000
+NON_REWRITE_MODES = {
+    WritingMode.CORRECT_GRAMMAR,
+    WritingMode.SPELLING,
+    WritingMode.PUNCTUATION,
+    WritingMode.EXPLAIN_GRAMMAR,
+    WritingMode.SUMMARIZE,
+}
+PROOFREADING_MODES = {
+    WritingMode.CORRECT_GRAMMAR,
+    WritingMode.SPELLING,
+    WritingMode.PUNCTUATION,
+    WritingMode.EXPLAIN_GRAMMAR,
+}
 
 
 class OllamaUnavailableError(RuntimeError):
@@ -128,11 +142,15 @@ class OllamaWritingClient:
                     },
                     {
                         "role": "user",
-                        "content": f"Text to transform:\n<text>\n{text}\n</text>",
+                        "content": json.dumps({"text": text}, ensure_ascii=False),
                     },
                 ],
                 format=RESPONSE_SCHEMA,
-                options={"temperature": 0.2, "num_ctx": 4096, "num_predict": 700},
+                options={
+                    "temperature": 0.1 if mode in PROOFREADING_MODES else 0.2,
+                    "num_ctx": 4096,
+                    "num_predict": 500 if mode in PROOFREADING_MODES else 700,
+                },
                 keep_alive="5m",
             )
         except (ollama.ResponseError, httpx.HTTPError, OSError) as exc:
@@ -167,13 +185,59 @@ class OllamaWritingClient:
                 "writing-suggestion format. Please try again."
             )
 
+        if mode in PROOFREADING_MODES:
+            result["corrected_text"] = _unwrap_text_markup(
+                result["corrected_text"]
+            )
+
+        if mode is WritingMode.EXPLAIN_GRAMMAR:
+            result["corrected_text"] = text
+
         if not result["corrected_text"].strip():
             raise OllamaResponseError(
                 "Ollama returned an empty suggestion. Please try again."
             )
 
+        if mode is WritingMode.PUNCTUATION:
+            original_words = re.findall(r"\w+", text, flags=re.UNICODE)
+            suggested_words = re.findall(
+                r"\w+",
+                result["corrected_text"],
+                flags=re.UNICODE,
+            )
+            if suggested_words != original_words:
+                raise OllamaResponseError(
+                    "The model changed words while fixing punctuation, so its "
+                    "suggestion was not applied. Try again or use Rewrite."
+                )
+        elif mode is WritingMode.SPELLING:
+            original_words = re.findall(r"\w+", text, flags=re.UNICODE)
+            suggested_words = re.findall(
+                r"\w+",
+                result["corrected_text"],
+                flags=re.UNICODE,
+            )
+            original_punctuation = re.findall(r"[^\w\s]", text, flags=re.UNICODE)
+            suggested_punctuation = re.findall(
+                r"[^\w\s]",
+                result["corrected_text"],
+                flags=re.UNICODE,
+            )
+            if (
+                len(suggested_words) != len(original_words)
+                or suggested_punctuation != original_punctuation
+            ):
+                raise OllamaResponseError(
+                    "The model changed sentence structure or punctuation while "
+                    "fixing spelling, so its suggestion was not applied. Try "
+                    "Correct grammar instead."
+                )
+
         # Return the exact submitted text even if the model altered this metadata.
         result["original_text"] = text
+        if mode in NON_REWRITE_MODES:
+            result["suggested_tone"] = "Unchanged"
+            result["alternatives"] = []
         result["alternatives"] = list(
             dict.fromkeys(
                 alternative.strip()
@@ -183,3 +247,11 @@ class OllamaWritingClient:
             )
         )[:2]
         return result
+
+
+def _unwrap_text_markup(text: str) -> str:
+    stripped = text.strip()
+    lowered = stripped.lower()
+    if lowered.startswith("<text>") and lowered.endswith("</text>"):
+        return stripped[6:-7].strip()
+    return text

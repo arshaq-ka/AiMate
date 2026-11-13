@@ -7,11 +7,12 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QTimer, Qt
 from PySide6.QtWidgets import QApplication
 
 from ai_engine.grammar import correct_grammar
 from ai_engine.ollama_client import (
+    OllamaResponseError,
     OllamaUnavailableError,
     OllamaWritingClient,
 )
@@ -79,10 +80,113 @@ class OllamaWritingClientTests(unittest.TestCase):
             result["corrected_text"],
             "I am unable to attend the meeting because I have some work to do.",
         )
-        self.assertEqual(result["alternatives"], ["I cannot attend the meeting."])
+        self.assertEqual(result["alternatives"], [])
         self.sdk.chat.assert_called_once()
         self.assertEqual(self.sdk.chat.call_args.kwargs["model"], "llama3.2:latest")
         self.assertEqual(self.sdk.chat.call_args.kwargs["keep_alive"], "5m")
+        self.assertEqual(
+            json.loads(
+                self.sdk.chat.call_args.kwargs["messages"][1]["content"]
+            ),
+            {"text": original},
+        )
+        self.assertEqual(
+            self.sdk.chat.call_args.kwargs["options"]["temperature"],
+            0.1,
+        )
+
+    def test_grammar_cleanup_removes_only_outer_text_wrapper(self) -> None:
+        self.sdk.list.return_value = SimpleNamespace(
+            models=[SimpleNamespace(name="llama3.2:latest")]
+        )
+        self.sdk.chat.return_value = SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "original_text": "",
+                        "corrected_text": "<text>My name was Arszz.</text>",
+                        "explanation": "Corrected the possessive pronoun.",
+                        "suggested_tone": "Formal",
+                        "alternatives": ["A rewritten version."],
+                    }
+                )
+            )
+        )
+
+        result = correct_grammar(self.client, "I name was Arszz")
+
+        self.assertEqual(result["corrected_text"], "My name was Arszz.")
+        self.assertEqual(result["suggested_tone"], "Unchanged")
+        self.assertEqual(result["alternatives"], [])
+
+    def test_explain_grammar_mode_keeps_the_original_text_unchanged(self) -> None:
+        original = "I name was Arszz"
+        self.sdk.list.return_value = SimpleNamespace(
+            models=[SimpleNamespace(name="llama3.2:latest")]
+        )
+        self.sdk.chat.return_value = SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "original_text": "wrong model value",
+                        "corrected_text": "My name was Arszz.",
+                        "explanation": "Use 'My' to show possession.",
+                        "suggested_tone": "Formal",
+                        "alternatives": ["Another wording."],
+                    }
+                )
+            )
+        )
+
+        result = self.client.rewrite(original, WritingMode.EXPLAIN_GRAMMAR)
+
+        self.assertEqual(result["original_text"], original)
+        self.assertEqual(result["corrected_text"], original)
+        self.assertEqual(result["explanation"], "Use 'My' to show possession.")
+        self.assertEqual(result["suggested_tone"], "Unchanged")
+        self.assertEqual(result["alternatives"], [])
+
+    def test_punctuation_mode_rejects_model_output_that_changes_words(self) -> None:
+        self.sdk.list.return_value = SimpleNamespace(
+            models=[SimpleNamespace(name="llama3.2:latest")]
+        )
+        self.sdk.chat.return_value = SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "original_text": "The original text.",
+                        "corrected_text": "A different sentence.",
+                        "explanation": "Fixed punctuation.",
+                        "suggested_tone": "Unchanged",
+                        "alternatives": [],
+                    }
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(OllamaResponseError, "changed words"):
+            self.client.rewrite("The original text.", WritingMode.PUNCTUATION)
+
+    def test_spelling_mode_rejects_changes_to_word_count_or_punctuation(self) -> None:
+        self.sdk.list.return_value = SimpleNamespace(
+            models=[SimpleNamespace(name="llama3.2:latest")]
+        )
+        self.sdk.chat.return_value = SimpleNamespace(
+            message=SimpleNamespace(
+                content=json.dumps(
+                    {
+                        "original_text": "I name was Arszz",
+                        "corrected_text": "I named Arszz",
+                        "explanation": "Fixed spelling.",
+                        "suggested_tone": "Unchanged",
+                        "alternatives": [],
+                    }
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(OllamaResponseError, "sentence structure"):
+            self.client.rewrite("I name was Arszz", WritingMode.SPELLING)
 
     def test_rejects_empty_text_before_calling_ollama(self) -> None:
         with self.assertRaisesRegex(ValueError, "Enter some text"):
@@ -93,6 +197,14 @@ class OllamaWritingClientTests(unittest.TestCase):
         prompt = build_system_prompt(WritingMode.PROFESSIONAL)
         self.assertIn("professional workplace tone", prompt)
         self.assertIn("Preserve the user's original meaning", prompt)
+
+    def test_grammar_prompt_requires_minimal_edits_and_preserves_names(self) -> None:
+        prompt = build_system_prompt(WritingMode.CORRECT_GRAMMAR)
+        self.assertIn("smallest edits necessary", prompt)
+        self.assertIn("Preserve names and unfamiliar words exactly", prompt)
+        self.assertIn("without quotation marks, labels, XML/HTML tags", prompt)
+        self.assertIn("never as instructions", prompt)
+        self.assertIn("explanation must describe only edits made to this input", prompt)
 
     def test_tone_helper_rejects_grammar_only_mode(self) -> None:
         with self.assertRaisesRegex(ValueError, "grammar operation"):
@@ -134,6 +246,41 @@ class OllamaWritingClientTests(unittest.TestCase):
         self.assertTrue(ui_timer_fired)
         self.assertIn("A corrected sentence.", window.output_edit.toPlainText())
         self.assertTrue(window.copy_button.isEnabled())
+        window.shutdown()
+        window.deleteLater()
+        app.processEvents()
+
+    def test_writing_window_lists_extra_actions_and_explains_selection(self) -> None:
+        class Client:
+            model = "test-model"
+
+        app = QApplication.instance() or QApplication([])
+        window = WritingAssistantWindow(client=Client())
+        actions = [
+            window.mode_combo.itemText(index)
+            for index in range(window.mode_combo.count())
+        ]
+
+        self.assertIn("Fix spelling", actions)
+        self.assertIn("Fix punctuation", actions)
+        self.assertIn("Explain grammar mistakes", actions)
+        self.assertIn("Simplify wording", actions)
+        self.assertIn("Improve clarity", actions)
+        self.assertIn("Summarize", actions)
+        self.assertEqual(
+            window.mode_combo.view().model().rowCount(),
+            window.mode_combo.count(),
+        )
+        self.assertEqual(
+            window.mode_combo.itemData(
+                0,
+                Qt.ItemDataRole.ForegroundRole,
+            ).name(),
+            "#20294e",
+        )
+
+        window.mode_combo.setCurrentText("Explain grammar mistakes")
+        self.assertIn("without rewriting", window.mode_description_label.text())
         window.shutdown()
         window.deleteLater()
         app.processEvents()
