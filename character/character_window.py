@@ -21,6 +21,10 @@ class CharacterWindow(QWidget):
     animation_paused_changed = Signal(bool)
     quit_requested = Signal()
     writing_assistant_requested = Signal()
+    activity_monitor_requested = Signal()
+    activity_history_requested = Signal()
+    activity_privacy_requested = Signal()
+    screenshot_capture_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -40,13 +44,21 @@ class CharacterWindow(QWidget):
         self.animation.start()
         self._drag_offset: QPoint | None = None
         self._thinking = False
+        self._monitoring = False
+        self._monitoring_paused = False
         self._place_near_screen_corner()
 
     @property
     def state(self) -> CharacterState:
+        if self._thinking:
+            return CharacterState.THINKING
+        if self._monitoring and self._monitoring_paused:
+            return CharacterState.MONITORING_PAUSED
+        if self._monitoring:
+            return CharacterState.MONITORING
         if self.animation.is_paused:
             return CharacterState.PAUSED
-        return CharacterState.THINKING if self._thinking else CharacterState.IDLE
+        return CharacterState.IDLE
 
     def _place_near_screen_corner(self) -> None:
         screen = self.screen()
@@ -73,11 +85,19 @@ class CharacterWindow(QWidget):
         self._thinking = thinking
         self.update()
 
+    def set_monitoring(self, monitoring: bool, paused: bool = False) -> None:
+        self._monitoring = monitoring
+        self._monitoring_paused = paused
+        self.update()
+
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt event override
         event.ignore()
         self.hide()
 
     def contextMenuEvent(self, event) -> None:  # noqa: N802 - Qt event override
+        self._build_context_menu().exec(event.globalPos())
+
+    def _build_context_menu(self) -> QMenu:
         menu = QMenu(self)
         pause_action = QAction(
             "Resume animation" if self.animation.is_paused else "Pause animation",
@@ -86,16 +106,37 @@ class CharacterWindow(QWidget):
         pause_action.triggered.connect(self.toggle_animation)
         writing_action = QAction("Open writing assistant", menu)
         writing_action.triggered.connect(self.writing_assistant_requested)
+        monitoring_label = (
+            "Resume activity monitoring"
+            if self._monitoring and self._monitoring_paused
+            else "Pause activity monitoring"
+            if self._monitoring
+            else "Start activity monitoring"
+        )
+        monitoring_action = QAction(monitoring_label, menu)
+        monitoring_action.triggered.connect(self.activity_monitor_requested)
+        history_action = QAction("View activity history", menu)
+        history_action.triggered.connect(self.activity_history_requested)
+        privacy_action = QAction("Activity privacy exclusions", menu)
+        privacy_action.triggered.connect(self.activity_privacy_requested)
+        screenshot_action = QAction("Screenshots and OCR", menu)
+        screenshot_action.triggered.connect(self.screenshot_capture_requested)
         hide_action = QAction("Hide character", menu)
         hide_action.triggered.connect(self.hide)
         quit_action = QAction("Quit", menu)
         quit_action.triggered.connect(self.quit_requested)
         menu.addAction(pause_action)
         menu.addAction(writing_action)
+        menu.addSeparator()
+        menu.addAction(monitoring_action)
+        menu.addAction(history_action)
+        menu.addAction(privacy_action)
+        menu.addAction(screenshot_action)
+        menu.addSeparator()
         menu.addAction(hide_action)
         menu.addSeparator()
         menu.addAction(quit_action)
-        menu.exec(event.globalPos())
+        return menu
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt event override
         if event.button() == Qt.MouseButton.LeftButton:
@@ -219,6 +260,8 @@ class CharacterWindow(QWidget):
         status_color = {
             CharacterState.IDLE: QColor("#74e6bd"),
             CharacterState.THINKING: QColor("#a18bff"),
+            CharacterState.MONITORING: QColor("#4bbf85"),
+            CharacterState.MONITORING_PAUSED: QColor("#ffcf70"),
             CharacterState.PAUSED: QColor("#ffcf70"),
         }[self.state]
         painter.setPen(Qt.PenStyle.NoPen)

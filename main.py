@@ -5,6 +5,9 @@ from pathlib import Path
 from PySide6.QtCore import QLockFile, QPoint, QStandardPaths
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
+from activity_monitor.activity_history import ActivityHistoryWindow
+from activity_monitor.app_tracker import ActivityMonitor
+from activity_monitor.privacy_settings import PrivacySettingsDialog
 from character.character_window import CharacterWindow
 from character.tray import SystemTrayController
 from text_assistant.selection import (
@@ -55,13 +58,107 @@ def main() -> int:
     try:
         character = CharacterWindow()
         writing_assistant = WritingAssistantWindow()
+        activity_monitor = ActivityMonitor(app)
+        activity_history = ActivityHistoryWindow(activity_monitor)
         writing_assistant.processing_changed.connect(character.set_thinking)
+        activity_monitor.state_changed.connect(character.set_monitoring)
         character.writing_assistant_requested.connect(
             writing_assistant.show_and_focus
         )
-        tray = SystemTrayController(app, character, writing_assistant.show_and_focus)
+
+        def update_monitoring_menu(_active: bool = False) -> None:
+            tray.set_monitoring_state(
+                activity_monitor.monitoring,
+                activity_monitor.paused,
+                activity_monitor.screenshots_enabled,
+            )
+
+        def toggle_activity_monitoring() -> None:
+            if activity_monitor.monitoring and not activity_monitor.paused:
+                activity_monitor.pause()
+                return
+            if activity_monitor.monitoring and activity_monitor.paused:
+                activity_monitor.resume()
+                return
+            answer = QMessageBox.question(
+                None,
+                "Start activity monitoring?",
+                "The companion will record the active application's process name, "
+                "window title, category, and time spent, while keeping records in "
+                "memory for this run only. It does not record keystrokes or read "
+                "document contents. Sensitive/password/private windows are "
+                "automatically skipped. Start monitoring?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                activity_monitor.start()
+
+        def open_activity_privacy() -> None:
+            dialog = PrivacySettingsDialog(activity_monitor)
+            dialog.exec()
+
+        def toggle_screenshot_capture() -> None:
+            if activity_monitor.screenshots_enabled:
+                activity_monitor.disable_screenshot_capture()
+                update_monitoring_menu()
+                tray.show_notification(
+                    "Screenshots disabled",
+                    "Periodic screenshots and OCR have been disabled.",
+                )
+                return
+            if not activity_monitor.monitoring:
+                tray.show_notification(
+                    "Start monitoring first",
+                    "Enable activity monitoring before optional screenshots.",
+                )
+                return
+            answer = QMessageBox.warning(
+                None,
+                "Enable screenshots and OCR?",
+                "With your separate consent, the companion will capture only the "
+                "active window every five minutes and run local OCR. Screenshots "
+                "and OCR text remain in memory only; the most recent capture can "
+                "be reviewed and is never uploaded. Password, private, excluded, "
+                "and sensitive windows are skipped. Enable this optional feature?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                activity_monitor.enable_screenshot_capture()
+            except (OSError, RuntimeError) as exc:
+                tray.show_notification("Screenshots unavailable", str(exc))
+                return
+            update_monitoring_menu()
+
+        tray = SystemTrayController(
+            app,
+            character,
+            writing_assistant.show_and_focus,
+            toggle_activity_monitoring,
+            activity_history.show,
+            open_activity_privacy,
+            toggle_screenshot_capture,
+        )
         character.quit_requested.connect(tray.quit_application)
+        character.activity_monitor_requested.connect(toggle_activity_monitoring)
+        character.activity_history_requested.connect(activity_history.show)
+        character.activity_privacy_requested.connect(open_activity_privacy)
+        character.screenshot_capture_requested.connect(toggle_screenshot_capture)
         tray.quit_requested.connect(app.quit)
+        activity_monitor.state_changed.connect(
+            lambda _monitoring, _paused: update_monitoring_menu()
+        )
+        update_monitoring_menu()
+        activity_monitor.privacy_skip.connect(
+            lambda message: tray.show_notification("Privacy protection", message)
+        )
+        activity_monitor.monitoring_error.connect(
+            lambda message: tray.show_notification("Monitoring error", message)
+        )
+        activity_monitor.screenshot_ready.connect(activity_history.refresh)
         selection_controller = SelectionController(app)
         selection_controller.selection_ready.connect(
             writing_assistant.present_selection_and_suggest
@@ -108,6 +205,7 @@ def main() -> int:
     app.aboutToQuit.connect(character.stop_animation)
     app.aboutToQuit.connect(writing_assistant.shutdown)
     app.aboutToQuit.connect(selection_controller.shutdown)
+    app.aboutToQuit.connect(activity_monitor.shutdown)
     app.aboutToQuit.connect(instance_lock.unlock)
     if shortcut is not None:
         app.aboutToQuit.connect(shortcut.unregister)

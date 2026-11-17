@@ -1,10 +1,10 @@
 # Local AI Desktop Companion
 
-The project currently implements Phase 1 (the floating character), Phase 2
-(local Ollama writing assistance), and Phase 3 (explicit selected-text
-assistance). Text is sent only to the local Ollama service on this computer.
-Nothing is sent to a cloud AI service. Suggestions are never inserted into
-another application without an explicit Replace action.
+The project implements Phase 1 (the floating character), Phase 2 (local Ollama
+writing assistance), Phase 3 (explicit selected-text assistance), and Phase 4
+(opt-in activity review). Writing text is sent only to the local Ollama service
+on this computer. Nothing is sent to a cloud AI service. Suggestions are never
+inserted into another application without an explicit Replace action.
 
 ## Requirements
 
@@ -106,9 +106,38 @@ through UI Automation. The shortcut may also be unavailable if another
 application already registered Ctrl+Shift+G; the tray displays a warning and
 the assistant remains available from its menus.
 
+## Phase 4 activity monitoring and privacy
+
+Activity tracking is **off by default** and starts only after you confirm the
+tray's **Start activity monitoring** prompt. While on, the app checks the
+foreground window every three seconds and keeps its process name, window title,
+category, and time in memory for this run. It does not record keystrokes or read
+document contents. Use the tray menu to pause/resume tracking, open **View
+activity history**, or edit **Activity privacy exclusions**. You can add manual
+notes, delete selected entries, or clear the in-memory history. Monitoring
+controls are available from the character's right-click menu and the system
+tray. Quitting the app discards activity history and notes.
+
+Known messaging/AI chat apps and windows with sensitive title terms (including
+banking, health, passwords, private browsing, and inboxes) are skipped automatically.
+You can add process names and title phrases to the local exclusions list.
+Password-field checks use Windows UI Automation; if the check fails, optional
+capture is rejected rather than continuing.
+
+Periodic screenshots and OCR are a **separate, optional consent**. They capture
+only the active window immediately when enabled and then every five minutes.
+The latest capture and its locally recognized text stay in memory and can be
+reviewed in the activity-history window; disabling capture or quitting clears
+it. Captures are skipped for excluded/sensitive windows, password controls, or
+if the foreground window changes. Pillow and the `pytesseract` Python package
+are installed with the requirements, but OCR also needs the separate local
+Tesseract executable installed and available on `PATH`. If Tesseract is absent,
+the app reports that screenshots cannot be enabled. No screenshot or OCR text
+is uploaded or saved to disk.
+
 ## Tests
 
-Run the automated Phase 1, Phase 2, and Phase 3 unit tests:
+Run the automated Phase 1–4 unit tests:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -116,7 +145,9 @@ Run the automated Phase 1, Phase 2, and Phase 3 unit tests:
 
 These tests verify character behavior, model selection, writing requests,
 background responsiveness, selection handling, and safe clipboard fallback.
-Mocked tests do not require Ollama or make a real model request.
+Phase 4 tests cover categorization, exclusions, in-memory records/notes, pause
+and resume, and monitoring status. Mocked tests do not require Ollama or make a
+real model request.
 
 To manually test the real local integration:
 
@@ -147,6 +178,24 @@ To manually test Phase 3:
 7. Try an application that may not expose UIA text selection. Copy text
    manually, trigger the shortcut, and use **Paste from clipboard**.
 
+To manually test Phase 4:
+
+1. Launch the app and right-click the character or tray icon. Choose **Start
+   activity monitoring** and accept the prompt; monitoring should be visibly
+   indicated in the tray/character.
+2. Switch between Notepad and another app, then open **View activity history**
+   to review process names, window titles, categories, and durations.
+3. Use **Activity privacy exclusions** to exclude an app (for example
+   `notepad.exe`), switch to it, and confirm its window is skipped.
+4. Pause and resume monitoring from the tray. Add a note, select/delete an
+   entry, then try **Delete all activity**.
+5. To test screenshots, install the local Tesseract OCR executable and restart
+   the app. Choose **Enable periodic screenshots and OCR**, accept the separate
+   prompt, then review the latest capture and OCR text in activity history.
+   Sensitive-window and password-field skips should be reported in a tray
+   notification. If Tesseract is unavailable, the app should explain why
+   capture could not be enabled.
+
 ## Project files
 
 - `main.py` — application startup, tray integration, and graceful shutdown.
@@ -159,8 +208,10 @@ To manually test Phase 3:
 - `text_assistant/selection.py` — on-demand UI Automation selection and
   explicit replace/clipboard actions.
 - `text_assistant/shortcuts.py` — Windows Ctrl+Shift+G registration.
-- `tests/` — automated Phase 1, Phase 2, and Phase 3 tests.
-- `requirements.txt` — PySide6 and Ollama client dependencies.
+- `activity_monitor/` — opt-in active-window tracking, privacy exclusions,
+  local activity review, and optional screenshot/OCR capture.
+- `tests/` — automated Phase 1–4 tests.
+- `requirements.txt` — PySide6, Ollama, Pillow, and pytesseract dependencies.
 
-Activity monitoring, database storage, and document generation are later
-phases and are not implemented yet.
+Database storage and document generation are later phases and are not
+implemented yet.

@@ -15,6 +15,10 @@ class SystemTrayController(QObject):
         app: QApplication,
         character: CharacterWindow,
         show_writing_assistant: Callable[[], None],
+        activity_action: Callable[[], None] | None = None,
+        show_activity_history: Callable[[], None] | None = None,
+        edit_activity_privacy: Callable[[], None] | None = None,
+        toggle_screenshot_capture: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(app)
         self._app = app
@@ -29,6 +33,10 @@ class SystemTrayController(QObject):
         writing_action = QAction("Open writing assistant", self._menu)
         self._animation_action = QAction("Pause animation", self._menu)
         self._quit_action = QAction("Quit", self._menu)
+        self._monitoring_action = None
+        self._history_action = None
+        self._privacy_action = None
+        self._screenshot_action = None
 
         self._show_action.triggered.connect(self.show_character)
         self._hide_action.triggered.connect(self._character.hide)
@@ -40,6 +48,26 @@ class SystemTrayController(QObject):
         self._menu.addAction(writing_action)
         self._menu.addSeparator()
         self._menu.addAction(self._animation_action)
+        if activity_action and show_activity_history and edit_activity_privacy:
+            self._menu.addSeparator()
+            self._monitoring_action = QAction("Start activity monitoring", self._menu)
+            self._history_action = QAction("View activity history", self._menu)
+            self._privacy_action = QAction("Activity privacy exclusions", self._menu)
+            self._monitoring_action.triggered.connect(activity_action)
+            self._history_action.triggered.connect(show_activity_history)
+            self._privacy_action.triggered.connect(edit_activity_privacy)
+            self._menu.addAction(self._monitoring_action)
+            self._menu.addAction(self._history_action)
+            self._menu.addAction(self._privacy_action)
+            if toggle_screenshot_capture:
+                self._screenshot_action = QAction(
+                    "Enable periodic screenshots and OCR",
+                    self._menu,
+                )
+                self._screenshot_action.triggered.connect(
+                    toggle_screenshot_capture
+                )
+                self._menu.addAction(self._screenshot_action)
         self._menu.addSeparator()
         self._menu.addAction(self._quit_action)
         self._icon.setContextMenu(self._menu)
@@ -56,6 +84,37 @@ class SystemTrayController(QObject):
             QSystemTrayIcon.MessageIcon.Warning,
             8000,
         )
+
+    def set_monitoring_state(
+        self,
+        monitoring: bool,
+        paused: bool = False,
+        screenshots_enabled: bool = False,
+    ) -> None:
+        if self._monitoring_action is not None:
+            if not monitoring:
+                self._monitoring_action.setText("Start activity monitoring")
+            elif paused:
+                self._monitoring_action.setText("Resume activity monitoring")
+            else:
+                self._monitoring_action.setText("Pause activity monitoring")
+        if self._screenshot_action is not None:
+            self._screenshot_action.setText(
+                "Disable periodic screenshots and OCR"
+                if screenshots_enabled
+                else "Enable periodic screenshots and OCR"
+            )
+        state = (
+            "paused"
+            if paused
+            else "on"
+            if monitoring
+            else "off"
+        )
+        self._icon.setToolTip(
+            f"Local AI Desktop Companion • Monitoring {state}"
+        )
+        self._icon.setIcon(self._create_icon(monitoring, paused))
 
     def quit_application(self) -> None:
         self._icon.hide()
@@ -81,7 +140,7 @@ class SystemTrayController(QObject):
                 self.show_character()
 
     @staticmethod
-    def _create_icon() -> QIcon:
+    def _create_icon(monitoring: bool = False, paused: bool = False) -> QIcon:
         pixmap = QPixmap(64, 64)
         pixmap.fill(Qt.GlobalColor.transparent)
         painter = QPainter(pixmap)
@@ -94,5 +153,9 @@ class SystemTrayController(QObject):
         painter.setBrush(QColor("#8ce7ff"))
         painter.drawEllipse(21, 25, 6, 9)
         painter.drawEllipse(37, 25, 6, 9)
+        if monitoring:
+            painter.setBrush(QColor("#ffcf70") if paused else QColor("#35c879"))
+            painter.setPen(QColor("#ffffff"))
+            painter.drawEllipse(43, 42, 13, 13)
         painter.end()
         return QIcon(pixmap)
